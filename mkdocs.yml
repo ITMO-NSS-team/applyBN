@@ -68,6 +68,11 @@ nav:
           - logger: api/core/logger.md
           # - exceptions: api/core/exceptions.md
           # - progress_bar: api/core/progress_bar.md
+      - Causal explanation methods:
+          - api/explainable/causal_expl.md
+          - Concepts Explanations: api/explainable/concepts_causal.md
+          - Interventional Explanations: api/explainable/interventions_causal.md
+          - CNN Filter Importance: api/explainable/cnn_filter_importance.md
       - Feature extraction: api/feature_extraction.md
       - Feature selection: api/feature_selection.md
       - BN oversampling: api/bn_oversampling.md

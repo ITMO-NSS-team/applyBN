@@ -8,14 +8,25 @@ packages = [{include = "applybn"}]
 
 [tool.poetry.dependencies]
 python = "^3.10"
+
+# misc
 rich = "^13.0.0"
-numpy = "^2.0.0"
-pandas = "^2.2.2"
+
+# ML libraries
+numpy = "^1.26.4"
+pandas = "^2.0.0"
 scipy = "^1.14.0"
 scikit-learn = "^1.5.0"
 imbalanced-learn = "^0.13.0"
+torch = "^2.5.0"
+statsmodels = "^0.14.0"
+
+# causal inference libraries
+econml = "0.15.1"
 pgmpy = "0.1.26"
 
+# plotting
+matplotlib = "^3.9.0"
 
 [tool.poetry.dev-dependencies]
 pytest = "7.4.4"

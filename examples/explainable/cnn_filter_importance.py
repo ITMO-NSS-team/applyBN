@@ -1,103 +1,173 @@
+import torch
+import torch.nn as nn
+import torch.optim as optim
+import random
 import numpy as np
-import tensorflow as tf
-from tensorflow.keras.applications import VGG19
-from tensorflow.keras.preprocessing.image import ImageDataGenerator
-from sklearn.linear_model import LinearRegression
-from sklearn.metrics import mean_squared_error
+import matplotlib.pyplot as plt
+from torchvision import datasets, transforms, models
+from torch.utils.data import DataLoader
 
-# Load a pre-trained VGG19 model
-model = VGG19(weights='imagenet', include_top=True)
-layer_names = [layer.name for layer in model.layers if 'conv' in layer.name]
+# For progress bar in loops (optional usage)
+from tqdm import tqdm
 
-# Compile the model
-model.compile(optimizer='adam', loss='sparse_categorical_crossentropy', metrics=['accuracy'])
+# Import the causal_explainer module (adjust path as needed)
+from applybn.explainable.nn_layers_importance.cnn_filter_importance import CausalCNNExplainer
 
-# Prepare the CIFAR-10 dataset
-(x_train, y_train), (x_test, y_test) = tf.keras.datasets.cifar10.load_data()
-x_train, x_test = x_train / 255.0, x_test / 255.0
+def train_model(model, train_loader, device, num_epochs=5, lr=0.0001):
+    """Trains the given model on the provided data loader.
 
-# Use a smaller subset of images
-subset_size = 50  # Reduce this if needed
-x_train = x_train[:subset_size]
-y_train = y_train[:subset_size]
-x_test = x_test[:subset_size]
-y_test = y_test[:subset_size]
+    Args:
+        model (nn.Module):
+            The model to be trained.
+        train_loader (DataLoader):
+            DataLoader for the training data.
+        device (torch.device):
+            The device (CPU or CUDA) to train on.
+        num_epochs (int):
+            Number of epochs for training.
+        lr (float):
+            Learning rate for the optimizer.
 
-# Resize CIFAR-10 images to 224x224
-def resize_images(images, size):
-    return np.array([tf.image.resize(image, size).numpy() for image in images])
+    Returns:
+        nn.Module: Trained model.
+    """
+    criterion = nn.CrossEntropyLoss()
+    optimizer = optim.Adam(model.parameters(), lr=lr)
 
-x_train_resized = resize_images(x_train, (224, 224))
-x_test_resized = resize_images(x_test, (224, 224))
+    model.train()
+    model.to(device)
 
-# Extract filter responses in batches
-def get_filter_responses(model, layer_names, data, batch_size=50):
-    intermediate_layer_model = tf.keras.Model(inputs=model.input,
-                                              outputs=[model.get_layer(name).output for name in layer_names])
-    intermediate_output = []
-    for i in range(0, data.shape[0], batch_size):
-        batch_data = data[i:i + batch_size]
-        batch_output = intermediate_layer_model.predict(batch_data)
-        if not intermediate_output:
-            intermediate_output = batch_output
-        else:
-            for j in range(len(intermediate_output)):
-                intermediate_output[j] = np.concatenate((intermediate_output[j], batch_output[j]), axis=0)
-    return intermediate_output
+    for epoch in range(num_epochs):
+        running_loss = 0.0
+        total = 0
+        correct = 0
 
-train_responses = get_filter_responses(model, layer_names, x_train_resized)
-test_responses = get_filter_responses(model, layer_names, x_test_resized)
+        for images, labels in train_loader:
+            images, labels = images.to(device), labels.to(device)
 
-# Transformation function (Frobenius norm)
-def frobenius_norm(response):
-    transformed = []
-    for resp in response:
-        # Flatten each filter response to ensure uniform shape
-        flattened_resp = [np.linalg.norm(filt, ord='fro') for filt in resp]
-        transformed.append(flattened_resp)
-    return np.array(transformed)
+            optimizer.zero_grad()
+            outputs = model(images)
+            loss = criterion(outputs, labels)
+            loss.backward()
+            optimizer.step()
 
-train_transformed = [frobenius_norm(layer_response) for layer_response in train_responses]
-test_transformed = [frobenius_norm(layer_response) for layer_response in test_responses]
+            running_loss += loss.item()
 
-# Fit Structural Equations (using Linear Regression for simplicity)
-def fit_structural_equations(transformed_responses):
-    regressors = []
-    for i in range(1, len(transformed_responses)):
-        X = transformed_responses[i-1]
-        y = transformed_responses[i]
-        reg = LinearRegression().fit(X, y)
-        regressors.append(reg)
-    return regressors
+            _, predicted = torch.max(outputs.data, 1)
+            total += labels.size(0)
+            correct += (predicted == labels).sum().item()
 
-regressors = fit_structural_equations(train_transformed)
+        epoch_loss = running_loss / len(train_loader)
+        epoch_acc = correct / total
+        print(f"Epoch [{epoch+1}/{num_epochs}], Loss: {epoch_loss:.4f}, "
+              f"Accuracy: {epoch_acc*100:.2f}%")
 
-# Sanity Check
-def check_model_accuracy(regressors, test_transformed):
-    predictions = test_transformed[0]
-    for i in range(len(regressors)):
-        predictions = regressors[i].predict(predictions)
-    return mean_squared_error(test_transformed[-1], predictions)
+    return model
 
-mse = check_model_accuracy(regressors, test_transformed)
-print(f'Mean Squared Error of the SCM: {mse}')
+def main():
+    # Set device
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Using device: {device}")
 
-# Estimate Filter Importance
-def estimate_filter_importance(regressors, test_transformed):
-    baseline_accuracy = model.evaluate(x_test_resized, y_test, verbose=0)[1]
-    importances = []
-    for layer_index, reg in enumerate(regressors):
-        for filter_index in range(reg.coef_.shape[1]):
-            perturbed = np.copy(test_transformed[layer_index])
-            perturbed[:, filter_index] = 0  # Set the filter response to zero
-            predictions = perturbed
-            for i in range(layer_index, len(regressors)):
-                predictions = regressors[i].predict(predictions)
-            perturbed_accuracy = model.evaluate(x_test_resized, y_test, verbose=0)[1]
-            importance = baseline_accuracy - perturbed_accuracy
-            importances.append((layer_names[layer_index], filter_index, importance))
-        return sorted(importances, key=lambda x: x[2], reverse=True)
+    # Set random seeds for reproducibility
+    torch.manual_seed(42)
+    random.seed(42)
+    np.random.seed(42)
 
-filter_importances = estimate_filter_importance(regressors, test_transformed)
-for layer, filter_index, importance in filter_importances[:10]:  # Display top 10 important filters
-    print(f'Layer: {layer}, Filter: {filter_index}, Importance: {importance}')
+    # Define transformations (as an example, e.g. CIFAR-10)
+    transform = transforms.Compose([
+        transforms.Resize(224),
+        transforms.ToTensor(),
+        transforms.Normalize((0.485, 0.456, 0.406),
+                             (0.229, 0.224, 0.225))
+    ])
+
+    # Example: Load CIFAR-10 dataset
+    train_dataset = datasets.CIFAR10(
+        root="./data", train=True, download=True, transform=transform
+    )
+    test_dataset = datasets.CIFAR10(
+        root="./data", train=False, download=True, transform=transform
+    )
+    train_loader = DataLoader(train_dataset, batch_size=64, shuffle=True, num_workers=2)
+    test_loader = DataLoader(test_dataset, batch_size=64, shuffle=False, num_workers=2)
+
+    # Load a pre-trained ResNet18 model
+    model = models.resnet18(weights=models.ResNet18_Weights.DEFAULT)
+
+    # Modify the last layer to output 10 classes
+    num_ftrs = model.fc.in_features
+    model.fc = nn.Linear(num_ftrs, 10)
+
+    # Train the model (example uses fewer epochs for quick demonstration)
+    model = train_model(model, train_loader, device, num_epochs=1, lr=0.0001)
+
+    # Create a CausalCNNExplainer instance
+    explainer = CausalCNNExplainer(model=model, device=device)
+
+    # Collect data for structural equation modeling
+    explainer.collect_data(train_loader)
+
+    # Learn structural equations (computes filter importances)
+    explainer.learn_structural_equations()
+    filter_importances = explainer.get_filter_importances()
+    print("Filter importances collected.")
+
+    # Visualizations (ADD THESE)
+    print("\nVisualizing insights...")
+
+    # 1. Input-space heatmap
+    sample_image, _ = next(iter(test_loader))
+    explainer.visualize_heatmap_on_input(sample_image[0])
+
+    # 2. First-layer filters
+    explainer.visualize_first_layer_filters(n_filters=16)
+
+    # 3. Importance distribution across layers
+    explainer.plot_importance_distribution()
+
+    # 4. t-SNE of filter weights (e.g., for layer 3)
+    explainer.visualize_filter_tsne(layer_idx=3)
+
+    # Evaluate baseline accuracy
+    baseline_acc = explainer.evaluate_model(explainer.model, test_loader)
+    print(f"Baseline Accuracy: {baseline_acc*100:.2f}%")
+
+    # Demonstrate pruning by importance vs random pruning
+    prune_percentages = [5, 10, 20]  # Example percentages
+    importance_accuracies = []
+    random_accuracies = []
+
+    for percent in prune_percentages:
+        # Pruning by importance
+        pruned_model_importance = explainer.prune_filters_by_importance(percent)
+        acc_imp = explainer.evaluate_model(pruned_model_importance, test_loader)
+        importance_accuracies.append(acc_imp * 100)
+        print(f"Accuracy after pruning {percent}% by importance: {acc_imp*100:.2f}%")
+
+        # Random pruning
+        pruned_model_random = explainer.prune_random_filters(percent)
+        acc_rand = explainer.evaluate_model(pruned_model_random, test_loader)
+        random_accuracies.append(acc_rand * 100)
+        print(f"Accuracy after pruning {percent}% randomly: {acc_rand*100:.2f}%")
+
+    # Plot the results (optional, showing example of usage)
+    try:
+        import matplotlib.pyplot as plt
+        plt.figure(figsize=(10, 6))
+        plt.plot([0] + prune_percentages, [baseline_acc * 100] + importance_accuracies,
+                 marker='o', label='Pruning by Importance')
+        plt.plot([0] + prune_percentages, [baseline_acc * 100] + random_accuracies,
+                 marker='s', label='Random Pruning')
+        plt.title('Accuracy vs. Percentage of Filters Pruned')
+        plt.xlabel('Percentage of Filters Pruned')
+        plt.ylabel('Accuracy (%)')
+        plt.legend()
+        plt.grid(True)
+        plt.show()
+    except ImportError:
+        print("Matplotlib is not installed. Skipping plots.")
+
+
+if __name__ == "__main__":
+    main()
