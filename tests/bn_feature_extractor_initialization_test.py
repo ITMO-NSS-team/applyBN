@@ -1,6 +1,7 @@
 import pytest
 from applybn.feature_extraction.bn_feature_extractor import BNFeatureGenerator
 
+
 @pytest.fixture
 def known_structure():
     return [('A', 'B'), ('B', 'C')]
